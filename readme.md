@@ -1,4 +1,4 @@
-# Rust Kernel Development Recap
+# Rust Kernel Development
 
 ## Goal
 
