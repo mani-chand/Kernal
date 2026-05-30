@@ -56,9 +56,7 @@ fn main() {
     }
     qemu_candidates.push("qemu-system-x86_64".to_string());
     qemu_candidates.push("C:\\Program Files\\qemu\\qemu-system-x86_64.exe".to_string());
-    qemu_candidates.push("C:\\Users\\manic\\QEMU\\qemu-system-x86_64.exe".to_string());
     qemu_candidates.push("C:\\Program Files (x86)\\qemu\\qemu-system-x86_64.exe".to_string());
-    qemu_candidates.push("C:\\Users\\manic\\AppData\\Local\\Android\\Sdk\\emulator\\qemu\\windows-x86_64\\qemu-system-x86_64.exe".to_string());
 
     let mut qemu_cmd = None;
     for candidate in &qemu_candidates {
@@ -83,7 +81,7 @@ fn main() {
         absolute_bios_path = absolute_bios_path[4..].to_string();
     }
 
-    let mut cmd = qemu_cmd.expect("failed to find QEMU. Ensure QEMU is installed under C:\\Users\\manic\\QEMU or added to your system PATH");
+    let mut cmd = qemu_cmd.expect("failed to find QEMU. Ensure QEMU is installed or specify its path in QEMU_PATH in the .env file");
     
     // Set path environment to resolve sibling DLLs for Android SDK emulator QEMU
     let program = cmd.get_program().to_string_lossy().into_owned();
