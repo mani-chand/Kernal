@@ -106,10 +106,10 @@ This triggers the host runner to automatically:
    qemu-system-x86_64 -drive format=raw,file=target/x86_64-unknown-none/debug/bios.img
    ```
 
-A QEMU GUI window will pop up showing the kernel's VGA output:
+A QEMU GUI window will pop up showing the kernel's graphical framebuffer output:
 
 ```txt
-Hi
+Hello World
 ```
 
 ### D. Environment Configuration (`.env`)
