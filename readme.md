@@ -1,557 +1,151 @@
-# Rust Kernel Development
+# Freestanding Rust OS Kernel
 
-## Goal
+A minimal, freestanding `no_std` x86_64 Rust operating system kernel that boots in QEMU using a modern BIOS bootloader.
 
-Build a minimal freestanding Rust kernel that can eventually boot in QEMU.
-
----
-
-# 1. Updating Rust Toolchain
-
-Initial error:
-
-```txt
-feature `edition2024` is required
 ```
-
-Cause:
-- Cargo version too old for Rust Edition 2024.
-
-Fix:
-
-```bash
-rustup update
-```
-
----
-
-# 2. Deprecated `rls-preview`
-
-Update failed because old RLS component was installed.
-
-Fix:
-
-```bash
-rustup component remove rls-preview
-```
-
-Modern Rust uses:
-
-- rust-analyzer
-
-instead of RLS.
-
----
-
-# 3. MSVC Linker Error
-
-Error:
-
-```txt
-link.exe not found
-```
-
-MSVC toolchain requires Visual Studio linker.
-
-Instead of fixing MSVC initially, switched to GNU toolchain.
-
-Fix:
-
-```bash
-rustup default stable-x86_64-pc-windows-gnu
+                  ┌────────────────────────┐
+                  │      Rust Source       │
+                  └───────────┬────────────┘
+                              │
+                              ▼
+                  ┌────────────────────────┐
+                  │  Freestanding Kernel   │
+                  │ (x86_64-unknown-none)  │
+                  └───────────┬────────────┘
+                              │
+                              ▼
+                  ┌────────────────────────┐
+                  │       Bootloader       │
+                  │   (bootloader_api)     │
+                  └───────────┬────────────┘
+                              │
+                              ▼
+                  ┌────────────────────────┐
+                  │  Bootable BIOS Image   │
+                  │      (bios.img)        │
+                  └───────────┬────────────┘
+                              │
+                              ▼
+                  ┌────────────────────────┐
+                  │  QEMU Virtual Machine  │
+                  │     (VGA Output)       │
+                  └────────────────────────┘
 ```
 
 ---
 
-# 4. First Successful Build
+## 1. Project Architecture
 
-After switching to GNU:
+The project is structured as a **Cargo Workspace** consisting of two main crates:
 
-```bash
-cargo build
-```
-
-worked successfully.
-
----
-
-# 5. Creating a Freestanding Binary
-
-Started converting normal Rust program into a kernel-style binary.
-
-Used:
-
-```rust
-#![no_std]
-#![no_main]
-```
-
-Meaning:
-
-- no standard library
-- no runtime
-- no OS dependencies
+1. **[kernel](file:///D:/rust/kernal/os/kernel)**: The freestanding kernel compiled for bare-metal `x86_64-unknown-none`.
+   - Disables the standard library (`#![no_std]`) and normal runtime entry points (`#![no_main]`).
+   - Defines a custom panic handler and a bootloader entry point utilizing `bootloader_api`.
+   - Writes directly to the VGA text buffer at `0xb8000` to display output.
+2. **[runner](file:///D:/rust/kernal/os)** (Workspace Root): The host application that orchestrates building the kernel, packaging it with the bootloader, and launching QEMU.
+   - Automatically builds the kernel using `-Z build-std`.
+   - Packages the compiled ELF into a raw BIOS disk image.
+   - Automatically detects, configures, and launches QEMU.
 
 ---
 
-# 6. Panic Handler
+## 2. Prerequisites & Setup
 
-Added custom panic handler:
+Ensure the following dependencies are installed and configured on your Windows system.
 
-```rust
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
-```
-
----
-
-# 7. Custom Entry Point
-
-Replaced `main()` with:
-
-```rust
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    loop {}
-}
-```
-
-This became the kernel entry point.
-
----
-
-# 8. Panic Unwinding Error
-
-Error:
-
-```txt
-unwinding panics are not supported without std
-```
-
-Fix in `Cargo.toml`:
-
-```toml
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-```
-
----
-
-# 9. WinMain Error
-
-Error:
-
-```txt
-undefined reference to `WinMain`
-```
-
-Cause:
-- Still building for Windows target.
-
-Moved toward freestanding target:
-
-```txt
-x86_64-unknown-none
-```
-
----
-
-# 10. Using Nightly Rust
-
-`build-std` requires nightly.
-
-Installed nightly GNU toolchain:
+### A. Rust Nightly GNU Toolchain
+This project overrides the default toolchain to use the Windows GNU Nightly toolchain.
 
 ```bash
 rustup override set nightly-x86_64-pc-windows-gnu
 ```
 
----
-
-# 11. Installing rust-src
-
-Needed Rust source code for rebuilding core libraries.
-
-Installed:
+### B. Required Rust Components & Target
+The kernel requires standard library source code (to compile `core` and `compiler_builtins` for bare metal) and cross-compiling components.
 
 ```bash
+# Required to rebuild core library for the bare-metal target
 rustup component add rust-src
-```
 
----
-
-# 12. Building core + compiler_builtins
-
-Cargo started rebuilding:
-
-- core
-- compiler_builtins
-
-for freestanding environment.
-
-This is required for kernels because there is no OS runtime.
-
----
-
-# 13. VGA Text Output Kernel
-
-Created minimal VGA text writer:
-
-```rust
-#![no_std]
-#![no_main]
-
-use core::panic::PanicInfo;
-
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
-
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    let vga_buffer = 0xb8000 as *mut u8;
-
-    unsafe {
-        *vga_buffer.offset(0) = b'H';
-        *vga_buffer.offset(1) = 0x0f;
-
-        *vga_buffer.offset(2) = b'i';
-        *vga_buffer.offset(3) = 0x0f;
-    }
-
-    loop {}
-}
-```
-
-This writes directly into VGA memory.
-
----
-
-# 14. Installing QEMU
-
-Installed QEMU emulator.
-
-Verified:
-
-```bash
-qemu-system-x86_64 --version
-```
-
-Needed to add QEMU directory to PATH.
-
-Temporary fix:
-
-```bash
-set PATH=%PATH%;C:\Users\manic\QEMU
-```
-
----
-
-# 15. Installing bootimage
-
-Installed bootimage tool:
-
-```bash
-cargo install bootimage
-```
-
-Purpose:
-- Creates bootable disk image from kernel.
-
----
-
-# 16. Installing LLVM Tools
-
-Installed LLVM utilities:
-
-```bash
+# Required for bootloader image packaging (uses llvm-objcopy internally)
 rustup component add llvm-tools-preview
+
+# Target required for bootloader building
+rustup target add x86_64-unknown-uefi
 ```
 
-Used internally by bootimage.
+### C. QEMU Emulator
+A standalone installation of QEMU is required to boot the image. 
+
+> [!TIP]
+> Do not use the QEMU binary bundled inside the Android SDK emulator. It contains customized wrappers and dynamic Qt components that will cause DLL initialization crashes (`0xc0000135`).
+
+Install the standard standalone QEMU version via Chocolatey (run in an elevated Administrator shell):
+
+```bash
+choco install qemu -y
+```
+
+Standard QEMU will be installed under `C:\Program Files\qemu\qemu-system-x86_64.exe`.
 
 ---
 
-# 17. Creating Bootable Images
+## 3. Running the Project
 
-Used:
+The build and run workflows are fully unified and automated. Just execute:
 
 ```bash
-cargo bootimage
+cargo run
 ```
 
-This process:
+This triggers the host runner to automatically:
+1. Recompile the **kernel** sub-package for the `x86_64-unknown-none` target.
+2. Generate the bootable BIOS image at `target/x86_64-unknown-none/debug/bios.img` using `bootloader_api`.
+3. Locate QEMU and launch it with the generated image:
+   ```bash
+   qemu-system-x86_64 -drive format=raw,file=target/x86_64-unknown-none/debug/bios.img
+   ```
 
-1. builds kernel
-2. builds bootloader
-3. packages bootable image
-
-Result:
+A QEMU GUI window will pop up showing the kernel's VGA output:
 
 ```txt
-bootimage-os.bin
+Hi
 ```
+
+### D. Environment Configuration (`.env`)
+The runner supports configuring options through a `.env` file located in the workspace root:
+
+```ini
+# Path to the QEMU system emulator binary
+QEMU_PATH=C:\Program Files\qemu\qemu-system-x86_64.exe
+```
+
+If `QEMU_PATH` is specified in the `.env` file, the runner will prioritize it over default candidate paths when starting the emulator.
 
 ---
 
-# 18. Bootloader Dependency
+## 4. Key Operating System Concepts Used
 
-Needed bootloader dependency.
+### `no_std`
+Disables the Rust standard library (`std`), which requires operating system features (like threads, file systems, and dynamic memory allocation). Instead, the kernel compiles against the basic `core` and `compiler_builtins` libraries.
 
-Added to `Cargo.toml`:
+### `no_main`
+Removes the standard Rust runtime initiation sequence which starts at `main()`. Instead, execution starts directly at the address set by the bootloader (`_start` or entry point defined by `bootloader_api`).
 
-```toml
-[dependencies]
-bootloader = "0.9.29"
-```
+### Custom Panic Handler
+Since there is no standard library to print panic messages and unwind the stack, a custom `#[panic_handler]` function must be defined. In case of a panic, this handler puts the CPU into an infinite loop.
 
----
-
-# 19. Page Mapping Panic
-
-Encountered:
-
-```txt
-failed to map page
-PageAlreadyMapped
-```
-
-Cause:
-- old bootloader + new nightly incompatibility.
-
-Fix:
-- pinned older nightly:
-
-```bash
-rustup toolchain install nightly-2024-01-01
-```
+### VGA Buffer Mode
+VGA text mode is a standard way to write text to the screen. It is mapped to physical address `0xb8000`. By writing characters and style attributes directly to this memory location, we can display text without any graphic drivers.
 
 ---
 
-# 20. Edition 2024 Compatibility
-
-Older nightly did not fully support Edition 2024.
-
-Changed:
-
-```toml
-edition = "2024"
-```
-
-to:
-
-```toml
-edition = "2021"
-```
-
----
-
-# 21. Cargo.lock Compatibility
-
-Error:
-
-```txt
-lock file version 4 requires -Znext-lockfile-bump
-```
-
-Fix:
-
-```bash
-del Cargo.lock
-```
-
-Then Cargo regenerated compatible lockfile.
-
----
-
-# 22. Older Nightly Attribute Syntax
-
-Error:
-
-```txt
-expected identifier, found keyword `unsafe`
-```
-
-Cause:
-- older nightly doesn't support:
-
-```rust
-#[unsafe(no_mangle)]
-```
-
-Fix:
-
-```rust
-#[no_mangle]
-```
-
----
-
-# 23. rust-lld Crash
-
-Error:
-
-```txt
-rust-lld failed: exit code: 0xc0000374
-```
-
-Meaning:
-- linker heap corruption crash.
-
-Likely caused by:
-- Windows GNU toolchain instability
-- old nightly + linker combination
-
-Recommended future path:
-- use MSVC nightly with Visual Studio Native Tools terminal.
-
----
-
-# Important Concepts Learned
-
-## Freestanding Binary
-
-A binary without:
-- operating system
-- standard library
-- runtime
-
----
-
-## no_std
-
-Removes Rust standard library.
-
----
-
-## no_main
-
-Removes normal Rust runtime startup.
-
----
-
-## _start
-
-Real entry point for kernel execution.
-
----
-
-## VGA Buffer
-
-Memory-mapped text mode at:
-
-```txt
-0xb8000
-```
-
-Allows direct hardware text output.
-
----
-
-## Bootloader
-
-Responsible for:
-- loading kernel into memory
-- setting up CPU state
-- jumping to kernel entry point
-
----
-
-## QEMU
-
-Acts like a virtual x86_64 computer.
-
-Provides:
-- virtual CPU
-- RAM
-- VGA hardware
-- BIOS emulation
-
----
-
-# Current Architecture
-
-```txt
-Rust Source
-    ↓
-Freestanding Kernel Binary
-    ↓
-Bootloader
-    ↓
-Bootable Disk Image
-    ↓
-QEMU Virtual Machine
-    ↓
-Virtual Hardware Execution
-```
-
----
-
-# What Comes Next
-
-Future kernel topics:
-
-- VGA text driver
-- interrupts
-- GDT / IDT
-- memory allocator
-- paging
-- keyboard driver
-- heap allocation
-- scheduler
-- processes
-- syscalls
-- filesystem
-- multitasking
-
----
-
-# Useful Commands Recap
-
-## Build kernel
-
-```bash
-cargo build -Z build-std=core,compiler_builtins
-```
-
-## Create bootable image
-
-```bash
-cargo bootimage
-```
-
-## Run boot image in QEMU
-
-```bash
-qemu-system-x86_64 -drive format=raw,file=target/x86_64-unknown-none/debug/bootimage-os.bin
-```
-
-## Verify QEMU
-
-```bash
-qemu-system-x86_64 --version
-```
-
-## Install rust-src
-
-```bash
-rustup component add rust-src
-```
-
-## Install LLVM tools
-
-```bash
-rustup component add llvm-tools-preview
-```
-
-## Install bootimage
-
-```bash
-cargo install bootimage
-```
+## 5. Troubleshooting & Historical Walkthrough
+
+During development, the following major errors were solved:
+
+* **`link.exe not found`**: Resolved by switching from the MSVC toolchain to the GNU toolchain (`stable-x86_64-pc-windows-gnu`).
+* **`unwinding panics are not supported without std`**: Fixed by adding `panic = "abort"` to the dev and release profiles in `Cargo.toml`.
+* **`undefined reference to WinMain`**: Resolved by target configuring the kernel to use the freestanding `x86_64-unknown-none` target rather than building for the host OS.
+* **`lock file version 4 requires -Znext-lockfile-bump`**: Resolved by deleting `Cargo.lock` and letting Cargo recreate a lockfile version compatible with the active toolchain.
+* **QEMU `0xc0000135` (STATUS_DLL_NOT_FOUND)**: Occurred when using Android SDK's QEMU due to missing Qt and wrapper libraries. Resolved by installing standalone QEMU via `choco` and prioritizing it in the launcher candidates.
