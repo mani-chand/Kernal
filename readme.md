@@ -113,14 +113,19 @@ Hello World
 ```
 
 ### D. Environment Configuration (`.env`)
-The runner supports configuring options through a `.env` file located in the workspace root:
+The runner supports configuring custom paths (such as QEMU location) through a `.env` file located in the workspace root. Since this file is git-ignored to prevent pushing local developer configurations to the public repository, a template is provided:
 
-```ini
-# Path to the QEMU system emulator binary
-QEMU_PATH=C:\Program Files\qemu\qemu-system-x86_64.exe
-```
+1. Copy [.env.example](file:///D:/rust/kernal/os/.env.example) to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+2. Edit the `.env` file to set your custom QEMU installation path:
+   ```ini
+   # Path to the QEMU system emulator binary
+   QEMU_PATH=C:\Program Files\qemu\qemu-system-x86_64.exe
+   ```
 
-If `QEMU_PATH` is specified in the `.env` file, the runner will prioritize it over default candidate paths when starting the emulator.
+If `QEMU_PATH` is specified in the `.env` file, the runner will prioritize it over standard default candidate paths when starting the emulator.
 
 ---
 
