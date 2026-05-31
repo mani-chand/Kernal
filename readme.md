@@ -168,19 +168,21 @@ During development, the following major errors were solved:
 - **`lock file version 4 requires -Znext-lockfile-bump`**: Resolved by deleting `Cargo.lock` and letting Cargo recreate a lockfile version compatible with the active toolchain.
 - **QEMU `0xc0000135` (STATUS_DLL_NOT_FOUND)**: Occurred when using Android SDK's QEMU due to missing Qt and wrapper libraries. Resolved by installing standalone QEMU via `choco` and prioritizing it in the launcher candidates.
 
-## 6. Binary Size & Compile Optimizations
+  ## 6. Binary Size & Compile Optimizations
 
     To keep the kernel freestanding binary size as small as possible, the project uses aggressive compiler
   optimization flags configured at the workspace root. These configurations reduce the final compiled kernel ELF from
   **~2.73 MB** (unoptimized debug build) down to **~3.03 KB** (optimized release build)—a **99.88%** reduction in
   footprint.
 
-    ### Key Optimizations Configured:
-    - **`panic = "immediate-abort"`**: Configured using `cargo-features = ["panic-immediate-abort"]`. Completely
+  ### Key Optimizations Configured
+
+  - **`panic = "immediate-abort"`**: Configured using `cargo-features = ["panic-immediate-abort"]`. Completely
   removes panic formatting strings and printing machinery, aborting execution immediately in the event of a panic.
-    - **`opt-level = "z"`**: Instructs the compiler to optimize the output specifically for minimal binary size.
-    - **`lto = true`**: Enables Link-Time Optimization (LTO), allowing optimizations to span across crate dependencies
+  - **`opt-level = "z"`**: Instructs the compiler to optimize the output specifically for minimal binary size.
+  - **`lto = true`**: Enables Link-Time Optimization (LTO), allowing optimizations to span across crate dependencies
   (e.g., standard library sources like `core` and `compiler_builtins`).
-    - **`codegen-units = 1`**: Compiles the crate as a single unit, maximizing compiler optimization opportunities.
-    - **`strip = true`**: Strips all debugging symbols and symbol tables from the final binary, preventing unnecessary
+  - **`codegen-units = 1`**: Compiles the crate as a single unit, maximizing compiler optimization opportunities.
+  - **`strip = true`**: Strips all debugging symbols and symbol tables from the final binary, preventing unnecessary
   metadata bloat.
+  ──────
