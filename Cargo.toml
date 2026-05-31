@@ -1,3 +1,5 @@
+cargo-features = ["panic-immediate-abort"]
+
 [workspace]
 resolver = "2"
 members = ["kernel"]
@@ -10,3 +12,13 @@ edition = "2021"
 [dependencies]
 bootloader = "0.11.15"
 tempfile = "=3.8.0"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "immediate-abort" # Removes panic string formatting to save space
+opt-level = "z"           # Optimize specifically for binary size
+lto = true                 # Enable Link Time Optimization (LTO)
+codegen-units = 1          # Merge code units for maximum compilation optimization
+strip = true               # Strip all symbols and debug info from the final binary

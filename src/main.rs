@@ -20,6 +20,7 @@ fn main() {
     let mut build_cmd = Command::new("cargo");
     build_cmd.args([
         "build",
+        "--release", // Compile with release profile optimizations
         "--package",
         "kernel",
         "--target",
@@ -35,7 +36,7 @@ fn main() {
     }
 
     // 2. Locate compiled kernel ELF
-    let kernel_elf = Path::new("target/x86_64-unknown-none/debug/kernel");
+    let kernel_elf = Path::new("target/x86_64-unknown-none/release/kernel");
     if !kernel_elf.exists() {
         eprintln!("Kernel ELF not found at {:?}", kernel_elf);
         std::process::exit(1);
@@ -43,8 +44,9 @@ fn main() {
 
     // 3. Create bootable BIOS image
     println!("Packaging boot image...");
-    let bios_path = Path::new("target/x86_64-unknown-none/debug/bios.img");
-    bootloader::BiosBoot::new(kernel_elf)
+    let bios_path = Path::new("target/x86_64-unknown-none/release/bios.img");
+    bootloader::BiosBoot
+        ::new(kernel_elf)
         .create_disk_image(bios_path)
         .expect("failed to create BIOS disk image");
 
@@ -73,7 +75,8 @@ fn main() {
     }
 
     // Get absolute path to bios image and strip UNC prefix if present
-    let mut absolute_bios_path = std::fs::canonicalize(bios_path)
+    let mut absolute_bios_path = std::fs
+        ::canonicalize(bios_path)
         .expect("failed to get absolute path of bios.img")
         .display()
         .to_string();
@@ -81,8 +84,10 @@ fn main() {
         absolute_bios_path = absolute_bios_path[4..].to_string();
     }
 
-    let mut cmd = qemu_cmd.expect("failed to find QEMU. Ensure QEMU is installed or specify its path in QEMU_PATH in the .env file");
-    
+    let mut cmd = qemu_cmd.expect(
+        "failed to find QEMU. Ensure QEMU is installed or specify its path in QEMU_PATH in the .env file"
+    );
+
     // Set path environment to resolve sibling DLLs for Android SDK emulator QEMU
     let program = cmd.get_program().to_string_lossy().into_owned();
     if program.contains("Android") && program.contains("emulator") {
@@ -91,18 +96,19 @@ fn main() {
                 if let Some(great_grandparent) = grandparent.parent() {
                     let lib64 = great_grandparent.join("lib64");
                     let qt_lib = lib64.join("qt").join("lib");
-                    
+
                     // Prepend parent, grandparent, great_grandparent, lib64, qt_lib, and UCRT downlevel directory to PATH
                     let mut new_path = format!(
-                        "{};{};{};{};{};C:\\Windows\\System32\\downlevel", 
+                        "{};{};{};{};{};C:\\Windows\\System32\\downlevel",
                         parent.display(),
-                        grandparent.display(), 
+                        grandparent.display(),
                         great_grandparent.display(),
-                        lib64.display(), 
+                        lib64.display(),
                         qt_lib.display()
                     );
-                    
-                    let path_key = std::env::vars()
+
+                    let path_key = std::env
+                        ::vars()
                         .map(|(k, _)| k)
                         .find(|k| k.eq_ignore_ascii_case("PATH"))
                         .unwrap_or_else(|| "PATH".to_string());
