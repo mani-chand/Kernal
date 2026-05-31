@@ -1,10 +1,12 @@
 #![no_std]
 #![no_main]
+#![feature(abi_x86_interrupt)]
 
 use core::panic::PanicInfo;
 use core::fmt;
 use bootloader_api::{ entry_point, BootInfo };
 use spin::Mutex;
+mod interrupts;
 
 // Global screen writer protected by a spinlock Mutex.
 // Initially, it's empty (None) until we initialize it in kernel_main.
@@ -281,6 +283,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         *WRITER.lock() = Some(FrameBufferWriter::new(buffer, info));
     }
 
+    // --- ADD INTERRUPT INITIALIZATION HERE ---
+    println!("Loading Interrupt Descriptor Table (IDT)...");
+    interrupts::init_idt();
+
+    println!("Initializing 8259 PIC controllers...");
+    unsafe {
+        interrupts::PICS.lock().initialize();
+    }
+
+    println!("Enabling hardware interrupts in CPU...");
+    x86_64::instructions::interrupts::enable(); // Tells the CPU to start listening to hardware interrupts
+    println!("Interrupts enabled! Try typing on your keyboard...");
+
     // Now we can use println! just like standard Rust!
     println!("Arch-Rust OS Kernel v0.1.0");
     println!("--------------------------------");
@@ -296,5 +311,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {
+         x86_64::instructions::hlt();
     }
 }

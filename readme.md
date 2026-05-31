@@ -186,3 +186,20 @@ During development, the following major errors were solved:
   - **`strip = true`**: Strips all debugging symbols and symbol tables from the final binary, preventing unnecessary
   metadata bloat.
   ──────
+
+## 7. Interactive Keyboard Driver (Interrupt-Driven)
+
+    To read keyboard input efficiently, the kernel implements an **Interrupt-Driven Keyboard Driver** by establishing
+  an **Interrupt Descriptor Table (IDT)** and configuring CPU interrupt lines.
+
+    ### Features Implemented:
+    - **`x86_64` Crate Abstractions**: Integrates low-level structures to manage the IDT, stack frames, and CPU
+  control registers.
+    - **Exception Handlers**: Configured handlers for critical CPU exceptions (Breakpoint and Double Fault) to handle
+  execution errors safely without resetting the system.
+    - **8259 PIC Remapping**: Remapped the primary and secondary legacy Programmable Interrupt Controllers (mapping
+  IRQ offsets to vector offsets `32` and `40`) to prevent hardware conflicts with CPU exceptions.
+    - **Port I/O Keyboard Listener**: Catches IRQ 1 keyboard interrupts, reads raw hardware scan codes from CPU Port
+  `0x60`, and triggers an End-Of-Interrupt (EOI) signal to notify the PIC.
+    - **Energy Efficient Halting (`hlt`)**: Configured the kernel loop to execute the CPU `hlt` instruction, putting
+  the processor into a low-power sleep state until an interrupt fires.
