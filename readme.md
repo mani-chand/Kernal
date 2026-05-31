@@ -1,6 +1,6 @@
-# Freestanding Rust OS Kernel
+# Arch-Rust OS Kernel
 
-A minimal, freestanding `no_std` x86_64 Rust operating system kernel that boots in QEMU using a modern BIOS bootloader.
+A minimal, freestanding `no_std` x86_64 operating system kernel written in Rust that boots into a graphical framebuffer environment inside QEMU using a modern BIOS bootloader.
 
 ```
                   ┌────────────────────────┐
@@ -28,7 +28,7 @@ A minimal, freestanding `no_std` x86_64 Rust operating system kernel that boots 
                               ▼
                   ┌────────────────────────┐
                   │  QEMU Virtual Machine  │
-                  │     (VGA Output)       │
+                  │ (Graphical Framebuffer)│
                   └────────────────────────┘
 ```
 
@@ -36,170 +36,146 @@ A minimal, freestanding `no_std` x86_64 Rust operating system kernel that boots 
 
 ## 1. Project Architecture
 
-The project is structured as a **Cargo Workspace** consisting of two main crates:
+The project is structured as a **Cargo Workspace** consisting of two main components:
 
-1. **[kernel](file:///D:/rust/kernal/os/kernel)**: The freestanding kernel compiled for bare-metal `x86_64-unknown-none`.
-   - Disables the standard library (`#![no_std]`) and normal runtime entry points (`#![no_main]`).
-   - Defines a custom panic handler and a bootloader entry point utilizing `bootloader_api`.
-   - Writes directly to the VGA text buffer at `0xb8000` to display output.
-2. **[runner](file:///D:/rust/kernal/os)** (Workspace Root): The host application that orchestrates building the kernel, packaging it with the bootloader, and launching QEMU.
-   - Automatically builds the kernel using `-Z build-std`.
-   - Packages the compiled ELF into a raw BIOS disk image.
-   - Automatically detects, configures, and launches QEMU.
+1. **[kernel](file:///D:/rust/kernal/os/kernel)**: The core freestanding kernel crate compiled for the bare-metal `x86_64-unknown-none` target.
+   - Disables the standard library via `#![no_std]` and overrides the default program entry points using `#![no_main]`.
+   - Implements CPU exception handling (breakpoint, double fault) and remaps the 8259 PIC to handle hardware interrupts.
+   - Utilizes a custom [FrameBufferWriter](file:///D:/rust/kernal/os/kernel/src/main.rs#L126) to render text on a pixel-based graphical framebuffer.
+2. **[runner](file:///D:/rust/kernal/os)** (Workspace Root): The host application defined in [src/main.rs](file:///D:/rust/kernal/os/src/main.rs) that orchestrates building, packaging, and emulation:
+   - Automatically invokes Cargo with `-Z build-std=core,compiler_builtins` to compile standard library dependencies for bare metal.
+   - Packages the compiled ELF executable into a bootable raw BIOS disk image (`bios.img`) using `bootloader::BiosBoot`.
+   - Locates the local QEMU system emulator, configures library search paths (critical for Android SDK virtual tools), and boots the image.
 
 ---
 
-## 2. Prerequisites & Setup
+## 2. Key OS Features
 
-Ensure the following dependencies are installed and configured on your Windows system.
+### A. Graphical Framebuffer Rendering
+Unlike primitive kernels that write directly to the 80x25 character VGA text buffer at `0xb8000`, this kernel writes to a pixel-level graphical framebuffer supplied by `bootloader_api`.
+- **Custom Font Engine**: Implements an 8x8 font bitmap representation for printable ASCII characters (from space ` ` to tilde `~`).
+- **Font Scaling**: Draws characters using custom pixel scaling ($2\times$ scale) for high visibility.
+- **Color Styling**: Displays text in a bright terminal green (`RGB: 0x00, 0xff, 0x00`) over a solid black background.
+- **Custom Cursor**: Renders a dynamic blinkless white horizontal block cursor to indicate current input position.
+
+### B. Interactive Command Shell
+The kernel boots into an interactive shell with the prompt `arch-rust > `. The system supports entering commands, processing strings, and displaying outputs:
+- **Command Buffer**: Accumulates keystrokes in a thread-safe global static [CMD_BUFFER](file:///D:/rust/kernal/os/kernel/src/main.rs#L388) (type [CommandBuf](file:///D:/rust/kernal/os/kernel/src/main.rs#L393)) up to a maximum length of 80 characters.
+- **Command Interpreter**: When `Enter` is pressed, the shell processes commands in [interpret_command](file:///D:/rust/kernal/os/kernel/src/main.rs#L424). Supported commands:
+  - `help`: Displays a list of available command shell tools.
+  - `clear`: Empties the screen and resets the cursor to the top-left corner.
+  - `about`: Prints OS version details and operating system architecture.
+  - `echo <text>`: Repeats the provided text back to the screen.
+  - `panic`: Intentionally triggers a CPU kernel panic to test recovery/halt handlers.
+
+### C. Advanced Keyboard Driver & Line History
+Hardware keyboard interrupts are captured via the legacy 8259 Programmable Interrupt Controller (PIC) mapping IRQ 1:
+- **Scancode Interpretation**: Read from I/O Port `0x60` and decoded into standard characters using the `pc-keyboard` crate.
+- **Smart Backspacing**: Intercepts `Backspace` input, popped from [CMD_BUFFER](file:///D:/rust/kernal/os/kernel/src/main.rs#L388), and triggers [erase_last_char](file:///D:/rust/kernal/os/kernel/src/main.rs#L165).
+- **Line-Wrapping History**: Tracks end-of-line pixel positions in a circular structure (`line_end_positions` and `current_line_index`). This allows the backspace key to cleanly wrap *backwards* onto previous lines when deleting multi-line commands.
+- **CPU Halting**: Employs the `hlt` assembly instruction inside the idle loop [kernel_main](file:///D:/rust/kernal/os/kernel/src/main.rs#L472) and panic handler, putting the CPU into a low-power state until the next hardware interrupt triggers.
+
+### D. Interrupt & Exception Handling
+A custom Interrupt Descriptor Table (IDT) is set up and loaded in [init_idt](file:///D:/rust/kernal/os/kernel/src/interrupts.rs#L58).
+- **[breakpoint_handler](file:///D:/rust/kernal/os/kernel/src/interrupts.rs#L65)**: Handles CPU debug breakpoints (`int3` instruction) without crashing.
+- **[double_fault_handler](file:///D:/rust/kernal/os/kernel/src/interrupts.rs#L70)**: Catches unhandled faults, preventing dangerous CPU triple faults (which trigger system resets) by putting the processor in a secure halt loop.
+- **Remapped PIC**: Configures the chained [PICS](file:///D:/rust/kernal/os/kernel/src/interrupts.rs#L20) to offset IRQ signals to vector offsets `32` and `40` to avoid overlap conflicts with processor exceptions.
+
+---
+
+## 3. Binary Size & Compiler Optimizations
+
+To run on bare-metal architectures, the kernel's binary footprint must be strictly controlled. Workspace compilation profiles are defined in the workspace root [Cargo.toml](file:///D:/rust/kernal/os/Cargo.toml) to reduce size:
+
+* **`panic = "immediate-abort"`**: Enabled via standard `panic-immediate-abort` cargo-features. Removes panic string parsing, formatting infrastructure, and file location outputs, reducing binary overhead.
+* **`opt-level = "z"`**: Directs the compiler to prioritize binary size optimization above execution speed.
+* **`lto = true`**: Enables Link-Time Optimization (LTO) to optimize functions across crate boundaries, eliminating dead code paths.
+* **`codegen-units = 1`**: Instructs the compiler to output code as a single optimization block, enabling aggressive inline optimization.
+* **`strip = true`**: Removes debugging symbols and symbol tables from the final ELF output.
+
+> [!NOTE]
+> These optimizations reduce the final freestanding kernel ELF binary size from **~2.73 MB** (unoptimized debug build) down to **~3.03 KB** (optimized release build)—representing a **99.88%** total footprint savings.
+
+---
+
+## 4. Setup & Installation
+
+Ensure you have the following packages and tools installed on your system.
 
 ### A. Rust Nightly GNU Toolchain
-
-This project overrides the default toolchain to use the Windows GNU Nightly toolchain.
-
+This workspace requires the Windows GNU Nightly toolchain:
 ```bash
 rustup override set nightly-x86_64-pc-windows-gnu
 ```
 
-### B. Required Rust Components & Target
-
-The kernel requires standard library source code (to compile `core` and `compiler_builtins` for bare metal) and cross-compiling components.
-
+### B. Required Toolchain Components
+Install target platforms and source components:
 ```bash
-# Required to rebuild core library for the bare-metal target
+# Core standard library source (needed to build core and compiler_builtins on bare-metal)
 rustup component add rust-src
 
-# Required for bootloader image packaging (uses llvm-objcopy internally)
+# LLVM utilities (used by packaging steps to create the raw bios disk image)
 rustup component add llvm-tools-preview
 
-# Target required for bootloader building
+# Bootloader packaging compilation target
 rustup target add x86_64-unknown-uefi
 ```
 
 ### C. QEMU Emulator
+A standalone QEMU emulator is required. 
 
-A standalone installation of QEMU is required to boot the image.
+> [!WARNING]
+> Do not use the virtualized QEMU binaries bundled within the Android SDK emulator. They contain external wrappers and custom Qt components that will lead to Windows DLL initialization errors (`0xc0000135`).
 
-> [!TIP]
-> Do not use the QEMU binary bundled inside the Android SDK emulator. It contains customized wrappers and dynamic Qt components that will cause DLL initialization crashes (`0xc0000135`).
-
-Install the standard standalone QEMU version via Chocolatey (run in an elevated Administrator shell):
-
-```bash
+Install a clean, standalone version of QEMU using Chocolatey (from an elevated Administrator shell):
+```powershell
 choco install qemu -y
 ```
-
-Standard QEMU will be installed under `C:\Program Files\qemu\qemu-system-x86_64.exe`.
+By default, this installs QEMU to `C:\Program Files\qemu\qemu-system-x86_64.exe`.
 
 ---
 
-## 3. Running the Project
+## 5. Configuration & Environment Variables
 
-The build and run workflows are fully unified and automated. Just execute:
+You can customize the QEMU binary path using an environment configuration file:
+
+1. Copy the provided template [.env.example](file:///D:/rust/kernal/os/.env.example) to `.env`:
+   ```bash
+   copy .env.example .env
+   ```
+2. Edit `.env` to define your custom QEMU installation path:
+   ```ini
+   QEMU_PATH=C:\Program Files\qemu\qemu-system-x86_64.exe
+   ```
+
+The workspace [runner](file:///D:/rust/kernal/os/src/main.rs) loads this configuration dynamically and prioritizes `QEMU_PATH` before looking up default paths.
+
+---
+
+## 6. How to Build & Run
+
+To compile the kernel, construct the bootable BIOS image, and launch the virtual machine, simply run:
 
 ```bash
 cargo run
 ```
 
-This triggers the host runner to automatically:
-
-1. Recompile the **kernel** sub-package for the `x86_64-unknown-none` target.
-2. Generate the bootable BIOS image at `target/x86_64-unknown-none/debug/bios.img` using `bootloader_api`.
-3. Locate QEMU and launch it with the generated image:
-
+This triggers the host runner program which performs the following tasks:
+1. Compiles the **[kernel](file:///D:/rust/kernal/os/kernel)** crate for the `x86_64-unknown-none` target.
+2. Creates the BIOS boot disk image at `target/x86_64-unknown-none/release/bios.img`.
+3. Locates QEMU, loads optional configuration paths, and fires up the machine:
    ```bash
-   qemu-system-x86_64 -drive format=raw,file=target/x86_64-unknown-none/debug/bios.img
+   qemu-system-x86_64 -drive format=raw,file=target/x86_64-unknown-none/release/bios.img
    ```
 
-A QEMU GUI window will pop up showing the kernel's graphical framebuffer output:
-
-```txt
-Hello World
-```
-
-### D. Environment Configuration (`.env`)
-
-The runner supports configuring custom paths (such as QEMU location) through a `.env` file located in the workspace root. Since this file is git-ignored to prevent pushing local developer configurations to the public repository, a template is provided:
-
-1. Copy [.env.example](file:///D:/rust/kernal/os/.env.example) to `.env`:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Edit the `.env` file to set your custom QEMU installation path:
-
-   ```ini
-   # Path to the QEMU system emulator binary
-   QEMU_PATH=C:\Program Files\qemu\qemu-system-x86_64.exe
-   ```
-
-If `QEMU_PATH` is specified in the `.env` file, the runner will prioritize it over standard default candidate paths when starting the emulator.
+A graphical window will launch displaying the `arch-rust > ` interactive CLI command shell!
 
 ---
 
-## 4. Key Operating System Concepts Used
+## 7. File Directory Map
 
-### `no_std`
-
-Disables the Rust standard library (`std`), which requires operating system features (like threads, file systems, and dynamic memory allocation). Instead, the kernel compiles against the basic `core` and `compiler_builtins` libraries.
-
-### `no_main`
-
-Removes the standard Rust runtime initiation sequence which starts at `main()`. Instead, execution starts directly at the address set by the bootloader (`_start` or entry point defined by `bootloader_api`).
-
-### Custom Panic Handler
-
-Since there is no standard library to print panic messages and unwind the stack, a custom `#[panic_handler]` function must be defined. In case of a panic, this handler puts the CPU into an infinite loop.
-
-### VGA Buffer Mode
-
-VGA text mode is a standard way to write text to the screen. It is mapped to physical address `0xb8000`. By writing characters and style attributes directly to this memory location, we can display text without any graphic drivers.
-
----
-
-## 5. Troubleshooting & Historical Walkthrough
-
-During development, the following major errors were solved:
-
-- **`link.exe not found`**: Resolved by switching from the MSVC toolchain to the GNU toolchain (`stable-x86_64-pc-windows-gnu`).
-- **`unwinding panics are not supported without std`**: Fixed by adding `panic = "abort"` to the dev and release profiles in `Cargo.toml`.
-- **`undefined reference to WinMain`**: Resolved by target configuring the kernel to use the freestanding `x86_64-unknown-none` target rather than building for the host OS.
-- **`lock file version 4 requires -Znext-lockfile-bump`**: Resolved by deleting `Cargo.lock` and letting Cargo recreate a lockfile version compatible with the active toolchain.
-- **QEMU `0xc0000135` (STATUS_DLL_NOT_FOUND)**: Occurred when using Android SDK's QEMU due to missing Qt and wrapper libraries. Resolved by installing standalone QEMU via `choco` and prioritizing it in the launcher candidates.
-
-  ## 6. Binary Size & Compile Optimizations
-
-    To keep the kernel freestanding binary size as small as possible, the project uses aggressive compiler
-  optimization flags configured at the workspace root. These configurations reduce the final compiled kernel ELF from
-  **~2.73 MB** (unoptimized debug build) down to **~3.03 KB** (optimized release build)—a **99.88%** reduction in
-  footprint.
-
-  ### Key Optimizations Configured
-
-  - **`panic = "immediate-abort"`**: Configured using `cargo-features = ["panic-immediate-abort"]`. Completely
-  removes panic formatting strings and printing machinery, aborting execution immediately in the event of a panic.
-  - **`opt-level = "z"`**: Instructs the compiler to optimize the output specifically for minimal binary size.
-  - **`lto = true`**: Enables Link-Time Optimization (LTO), allowing optimizations to span across crate dependencies
-  (e.g., standard library sources like `core` and `compiler_builtins`).
-  - **`codegen-units = 1`**: Compiles the crate as a single unit, maximizing compiler optimization opportunities.
-  - **`strip = true`**: Strips all debugging symbols and symbol tables from the final binary, preventing unnecessary
-  metadata bloat.
-  ──────
-
-## 7. Interactive Keyboard Driver (Interrupt-Driven)
-
-    To read keyboard input efficiently, the kernel implements an **Interrupt-Driven Keyboard Driver** by establishing
-  an **Interrupt Descriptor Table (IDT)** and configuring CPU interrupt lines.
-
-    ### Features Implemented:
-    - **`x86_64` Crate Abstractions**: Integrates low-level structures to manage the IDT, stack frames, and CPU
-  control registers.
-    - **Exception Handlers**: Configured handlers for critical CPU exceptions (Breakpoint and Double Fault) to handle
-  execution errors safely without resetting the system.
-    - **8259 PIC Remapping**: Remapped the primary and secondary legacy Programmable Interrupt Controllers (mapping
-  IRQ offsets to vector offsets `32` and `40`) to prevent hardware conflicts with CPU exceptions.
-    - **Port I/O Keyboard Listener**: Catches IRQ 1 keyboard interrupts, reads raw hardware scan codes from CPU Port
-  `0x60`, and triggers an End-Of-Interrupt (EOI) signal to notify the PIC.
-    - **Energy Efficient Halting (`hlt`)**: Configured the kernel loop to execute the CPU `hlt` instruction, putting
-  the processor into a low-power sleep state until an interrupt fires.
+- [Cargo.toml](file:///D:/rust/kernal/os/Cargo.toml) — Workspace configurations and compiler size optimizations.
+- [src/main.rs](file:///D:/rust/kernal/os/src/main.rs) — Host runner tool that compiles the kernel, generates the boot image, and invokes QEMU.
+- [kernel/Cargo.toml](file:///D:/rust/kernal/os/kernel/Cargo.toml) — Kernel crate configurations, settings, and low-level x86 dependencies.
+- [kernel/src/main.rs](file:///D:/rust/kernal/os/kernel/src/main.rs) — Core entry point, graphical [FrameBufferWriter](file:///D:/rust/kernal/os/kernel/src/main.rs#L126), font engines, custom formatting macros (`print!`/`println!`), command parser, and CPU halt loop.
+- [kernel/src/interrupts.rs](file:///D:/rust/kernal/os/kernel/src/interrupts.rs) — Interrupt Descriptor Table (IDT), CPU fault exception routines, and keyboard driver mapping IRQ 1.

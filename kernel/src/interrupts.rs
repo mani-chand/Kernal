@@ -4,6 +4,13 @@ use crate::println;
 use crate::print;
 use lazy_static::lazy_static;
 use spin::Mutex;
+use pc_keyboard::{ layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1 };
+
+lazy_static! {
+    static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> = Mutex::new(
+        Keyboard::new(ScancodeSet1::new(), layouts::Us104Key, HandleControl::MapLettersToUnicode)
+    );
+}
 
 // Remap PIC interrupts to start at vector 32 (IRQ 0-7) and 40 (IRQ 8-15)
 pub const PIC_1_OFFSET: u8 = 32;
@@ -17,7 +24,7 @@ pub static PICS: Mutex<pic8259::ChainedPics> = Mutex::new(unsafe {
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum InterruptIndex {
-    Timer = PIC_1_OFFSET,     // IRQ 0 is the timer
+    Timer = PIC_1_OFFSET, // IRQ 0 is the timer
     Keyboard = PIC_1_OFFSET + 1, // IRQ 1 is the keyboard
 }
 
@@ -62,7 +69,7 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 /// Double Fault handler: triggered when the CPU fails to call an exception handler
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
-    _error_code: u64,
+    _error_code: u64
 ) -> ! {
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
@@ -80,14 +87,60 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 
 /// Keyboard handler: called whenever a key is pressed or released (IRQ 1)
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Read the scan code of the pressed key from Port 0x60
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
-    // Print the raw scan code to the screen
-    print!("0x{:x} ", scancode);
+    let mut keyboard = KEYBOARD.lock();
+    if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+        if let Some(key) = keyboard.process_keyevent(key_event) {
+            match key {
+                // If it's a newline (Enter), process the current command buffer
+                DecodedKey::Unicode('\n') => {
+                    println!(); // Print a newline to screen
 
-    // Notify the PIC that we finished handling the interrupt
+                    let mut cmd_lock = crate::CMD_BUFFER.lock();
+                    // Convert the command bytes to a string slice
+                    if let Ok(cmd_str) = core::str::from_utf8(&cmd_lock.buf[..cmd_lock.len]) {
+                        crate::interpret_command(cmd_str);
+                    }
+                    cmd_lock.clear(); // Clear the command buffer
+                    crate::print_prompt(); // Draw a new prompt line
+                }
+
+                // If it's Backspace, remove from command buffer and screen
+                DecodedKey::Unicode('\u{8}') => {
+                    let mut cmd_lock = crate::CMD_BUFFER.lock();
+                    if cmd_lock.pop() {
+                        crate::erase_char();
+                    }
+                }
+
+                // If it's standard printable character, push to buffer and print it
+                DecodedKey::Unicode(character) => {
+                    // Check if character is printable ASCII (codes 32 to 126)
+                    let ascii_val = character as u8;
+                    if (32..=126).contains(&ascii_val) {
+                        let mut cmd_lock = crate::CMD_BUFFER.lock();
+                        if cmd_lock.push(ascii_val) {
+                            print!("{}", character);
+                        }
+                    }
+                }
+
+                // Catch raw Backspace key just in case
+                DecodedKey::RawKey(pc_keyboard::KeyCode::Backspace) => {
+                    let mut cmd_lock = crate::CMD_BUFFER.lock();
+                    if cmd_lock.pop() {
+                        crate::erase_char();
+                    }
+                }
+
+                // Ignore other keys
+                DecodedKey::RawKey(_raw_key) => {}
+            }
+        }
+    }
+
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     }

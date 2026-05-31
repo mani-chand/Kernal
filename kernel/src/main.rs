@@ -131,6 +131,9 @@ pub struct FrameBufferWriter {
     r_idx: usize,
     g_idx: usize,
     b_idx: usize,
+    // Add these fields to track line history:
+    line_end_positions: [usize; 256],
+    current_line_index: usize,
 }
 
 impl FrameBufferWriter {
@@ -150,9 +153,92 @@ impl FrameBufferWriter {
             r_idx,
             g_idx,
             b_idx,
+            // Initialize history:
+            line_end_positions: [0; 256],
+            current_line_index: 0,
         };
         writer.clear();
         writer
+    }
+
+    // --- ADD THIS METHOD ---
+    pub fn erase_last_char(&mut self) {
+        let scale = 2;
+        let char_width = 8 * scale + 2;
+
+        // 1. Erase the cursor at the old position
+        self.draw_cursor(false);
+
+        // If we are at the start of a line, check if we can jump back to the previous line
+        if self.x_pos == 10 && self.current_line_index > 0 {
+            self.current_line_index -= 1;
+            self.y_pos -= 20; // Move up 20 pixels
+            self.x_pos = self.line_end_positions[self.current_line_index]; // Restore previous line's X ending position;
+        }
+
+        // Only erase if we are not at the very start of the first line
+        if self.x_pos > 10 {
+            // Move the cursor back by one character width
+            self.x_pos -= char_width;
+
+            let bytes_per_pixel = self.info.bytes_per_pixel as usize;
+            let stride = self.info.stride as usize;
+            let char_height = 8 * scale;
+
+            // Draw a solid dark blue block over the character to erase it
+            for y in 0..char_height {
+                for x in 0..char_width {
+                    let px = self.x_pos + x;
+                    let py = self.y_pos + y;
+                    let pixel_offset = (py * stride + px) * bytes_per_pixel;
+                    if pixel_offset + 2 < self.buffer.len() {
+                        if bytes_per_pixel >= 3 {
+                            // Overwrite with pure black (RGB: 0, 0, 0)
+                            self.buffer[pixel_offset + self.r_idx] = 0x00;
+                            self.buffer[pixel_offset + self.g_idx] = 0x00;
+                            self.buffer[pixel_offset + self.b_idx] = 0x00;
+                        } else {
+                            self.buffer[pixel_offset] = 0x20;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Draw the cursor at the new position (after deleting/backtracking)
+        self.draw_cursor(true);
+    }
+    pub fn draw_cursor(&mut self, show: bool) {
+        let scale = 2;
+        let width = 8 * scale;
+        let height = 2 * scale;
+
+        // White cursor when showing, Black when hiding
+        let r_color = if show { 0xff } else { 0x00 };
+        let g_color = if show { 0xff } else { 0x00 };
+        let b_color = if show { 0xff } else { 0x00 };
+
+        let bytes_per_pixel = self.info.bytes_per_pixel as usize;
+        let stride = self.info.stride as usize;
+
+        let start_y = self.y_pos + 8 * scale - height;
+
+        for y in 0..height {
+            for x in 0..width {
+                let px = self.x_pos + x;
+                let py = start_y + y;
+                let pixel_offset = (py * stride + px) * bytes_per_pixel;
+                if pixel_offset + 2 < self.buffer.len() {
+                    if bytes_per_pixel >= 3 {
+                        self.buffer[pixel_offset + self.r_idx] = r_color;
+                        self.buffer[pixel_offset + self.g_idx] = g_color;
+                        self.buffer[pixel_offset + self.b_idx] = b_color;
+                    } else {
+                        self.buffer[pixel_offset] = r_color;
+                    }
+                }
+            }
+        }
     }
 
     /// Clears the screen with a dark blue color
@@ -166,9 +252,10 @@ impl FrameBufferWriter {
             for x in 0..width {
                 let pixel_offset = (y * stride + x) * bytes_per_pixel;
                 if bytes_per_pixel >= 3 {
-                    self.buffer[pixel_offset + self.r_idx] = 0x20;
-                    self.buffer[pixel_offset + self.g_idx] = 0x20;
-                    self.buffer[pixel_offset + self.b_idx] = 0x2e;
+                    // Set background to pure black (RGB: 0, 0, 0)
+                    self.buffer[pixel_offset + self.r_idx] = 0x00;
+                    self.buffer[pixel_offset + self.g_idx] = 0x00;
+                    self.buffer[pixel_offset + self.b_idx] = 0x00;
                 } else {
                     self.buffer[pixel_offset] = 0x20;
                 }
@@ -176,6 +263,8 @@ impl FrameBufferWriter {
         }
         self.x_pos = 10;
         self.y_pos = 10;
+        self.current_line_index = 0; // Reset line history index
+        self.draw_cursor(true); // <-- Draw cursor at top-left
     }
 
     /// Draws a single character to the framebuffer
@@ -186,24 +275,37 @@ impl FrameBufferWriter {
         let height = self.info.height as usize;
         let scale = 2; // Character scaling size
 
+        // 1. Erase the cursor at the old position
+        self.draw_cursor(false);
+
         // Handle newlines
         if c == '\n' {
+            if self.current_line_index < 255 {
+                self.line_end_positions[self.current_line_index] = self.x_pos;
+                self.current_line_index += 1;
+            }
             self.newline();
+            // 2. Draw the cursor at the start of the new line
+            self.draw_cursor(true);
             return;
         }
 
         // Auto wrap line if we reach the screen edge
         let char_width = 8 * scale + 2;
 
-        // --- ADD THIS BLOCK HERE ---
         // Handle spaces directly to avoid drawing boxes
         if c == ' ' {
             self.x_pos += char_width;
+            // 2. Draw the cursor at the new space position
+            self.draw_cursor(true);
             return;
         }
-        // ---------------------------
 
         if self.x_pos + char_width >= width {
+            if self.current_line_index < 255 {
+                self.line_end_positions[self.current_line_index] = self.x_pos;
+                self.current_line_index += 1;
+            }
             self.newline();
         }
 
@@ -225,9 +327,10 @@ impl FrameBufferWriter {
                             let py = self.y_pos + row * scale + dy;
                             let pixel_offset = (py * stride + px) * bytes_per_pixel;
                             if pixel_offset + 2 < self.buffer.len() {
-                                self.buffer[pixel_offset + self.r_idx] = 0xff;
+                                // Draw character in bright green (RGB: 0, 255, 0)
+                                self.buffer[pixel_offset + self.r_idx] = 0x00;
                                 self.buffer[pixel_offset + self.g_idx] = 0xff;
-                                self.buffer[pixel_offset + self.b_idx] = 0xff;
+                                self.buffer[pixel_offset + self.b_idx] = 0x00;
                             }
                         }
                     }
@@ -235,6 +338,9 @@ impl FrameBufferWriter {
             }
         }
         self.x_pos += char_width;
+
+        // 2. Draw the cursor at the new position
+        self.draw_cursor(true);
     }
 
     fn newline(&mut self) {
@@ -272,6 +378,95 @@ pub fn _print(args: fmt::Arguments) {
     }
 }
 
+pub fn erase_char() {
+    if let Some(writer) = WRITER.lock().as_mut() {
+        writer.erase_last_char();
+    }
+}
+
+// A thread-safe global command buffer of size 80
+pub static CMD_BUFFER: Mutex<CommandBuf> = Mutex::new(CommandBuf {
+    buf: [0; 80],
+    len: 0,
+});
+
+pub struct CommandBuf {
+    pub buf: [u8; 80],
+    pub len: usize,
+}
+
+impl CommandBuf {
+    pub fn push(&mut self, c: u8) -> bool {
+        if self.len < self.buf.len() {
+            self.buf[self.len] = c;
+            self.len += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn pop(&mut self) -> bool {
+        if self.len > 0 {
+            self.len -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+/// The command execution engine
+pub fn interpret_command(cmd_str: &str) {
+    let trimmed = cmd_str.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    // Split the command from its arguments (e.g., "echo hello" -> command: "echo", args: "hello")
+    let mut parts = trimmed.splitn(2, ' ');
+    let cmd = parts.next().unwrap_or("");
+    let args = parts.next().unwrap_or("");
+
+    match cmd {
+        "help" => {
+            println!("Available commands:");
+            println!("  help  - Show this help menu");
+            println!("  clear - Clear the screen");
+            println!("  about - About this OS");
+            println!("  echo  - Repeat text back (e.g., 'echo hello')");
+            println!("  panic - Force trigger a CPU panic");
+        }
+        "clear" => {
+            if let Some(writer) = WRITER.lock().as_mut() {
+                writer.clear();
+            }
+        }
+        "about" => {
+            println!("Arch-Rust OS v0.1.0");
+            println!("A minimal 64-bit freestanding OS written in Rust.");
+        }
+        "echo" => {
+            println!("{}", args);
+        }
+        "panic" => {
+            panic!("User triggered manual kernel panic!");
+        }
+        _ => {
+            println!("Unknown command: '{}'. Type 'help' for options.", cmd);
+        }
+    }
+}
+
+// Helper to print the command prompt line
+pub fn print_prompt() {
+    print!("arch-rust > ");
+}
+
 entry_point!(kernel_main);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
@@ -296,21 +491,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     x86_64::instructions::interrupts::enable(); // Tells the CPU to start listening to hardware interrupts
     println!("Interrupts enabled! Try typing on your keyboard...");
 
-    // Now we can use println! just like standard Rust!
     println!("Arch-Rust OS Kernel v0.1.0");
     println!("--------------------------------");
-    println!("Booting system components...");
-    println!("Memory Framebuffer initialized successfully.");
-    println!("Testing formatting: Number is {}, Hex is {:#x}", 42, 0xdeadbeef_u32);
-    println!("Welcome to your freestanding OS!");
+    println!("Type 'help' to see available commands.");
+    println!();
+    print_prompt(); // Draw the starting prompt line
 
     loop {
+        x86_64::instructions::hlt();
     }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {
-         x86_64::instructions::hlt();
+        x86_64::instructions::hlt();
     }
 }
