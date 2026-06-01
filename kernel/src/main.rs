@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
+extern crate alloc;
 use core::panic::PanicInfo;
 use core::fmt;
 use bootloader_api::{ entry_point, BootInfo };
@@ -9,6 +10,9 @@ use spin::Mutex;
 mod interrupts;
 mod speaker;
 mod time;
+mod ramdisk;
+mod allocator;
+mod task;
 
 // Global screen writer protected by a spinlock Mutex.
 // Initially, it's empty (None) until we initialize it in kernel_main.
@@ -505,6 +509,16 @@ impl CommandBuf {
 pub fn print_prompt() {
     print_color!(Color::LightCyan, "arch-rust > "); // Cyan prompt
 }
+/// Helper to print file sizes in a human-readable format without floats or heap allocation
+fn print_size(size: usize) {
+    if size < 1024 {
+        print!("{} B", size);
+    } else {
+        let kb = size / 1024;
+        let decimal = ((size % 1024) * 10) / 1024; // Calculate first decimal place
+        print!("{}.{} KB", kb, decimal);
+    }
+}
 
 pub fn interpret_command(cmd_str: &str) {
     let trimmed = cmd_str.trim();
@@ -523,7 +537,99 @@ pub fn interpret_command(cmd_str: &str) {
             println!("  clear - Clear the screen");
             println!("  about - About this OS");
             println!("  echo  - Repeat text back (e.g., 'echo hello')");
+            println!("  beep  - Play a beep sound (e.g., 'beep 440')");
+            println!("  ls    - List files on the RAM disk");
+            println!("  cat   - Read a file (e.g., 'cat hello.txt')");
+            println!("  alloc - Run Heap allocation tests");
             println!("  panic - Force trigger a CPU panic");
+            println!("  task  - Run cooperative multitasking test");
+        }
+        "task" => {
+            println_color!(Color::LightCyan, "Initializing task executor...");
+            let mut executor = task::SimpleExecutor::new();
+
+            // Spawn Task A
+            executor.spawn(
+                task::Task::new(async {
+                    for i in 1..=3 {
+                        println!("Task A: Step {}", i);
+                        task::yield_now().await; // Pause Task A, let Task B run
+                    }
+                })
+            );
+
+            // Spawn Task B
+            executor.spawn(
+                task::Task::new(async {
+                    for c in ['X', 'Y', 'Z'] {
+                        println!("Task B: Step {}", c);
+                        task::yield_now().await; // Pause Task B, let Task A run
+                    }
+                })
+            );
+
+            println_color!(Color::LightCyan, "Running task queue...");
+            executor.run();
+            println_color!(Color::LightGreen, "All tasks finished execution!");
+        }
+
+        "ls" => {
+            let mut long_format = false;
+            let mut human_readable = false;
+
+            // Parse suboptions (e.g., "-l", "-h", "-lh", "-l -h")
+            for arg in args.split_whitespace() {
+                if arg.starts_with('-') {
+                    for c in arg.chars().skip(1) {
+                        match c {
+                            'l' => {
+                                long_format = true;
+                            }
+                            'h' => {
+                                human_readable = true;
+                            }
+                            _ => println_color!(Color::Yellow, "Warning: unknown flag '-{}'", c),
+                        }
+                    }
+                }
+            }
+
+            if long_format {
+                // Print detailed table format
+                println_color!(Color::LightCyan, "{:<24} {}", "File Name", "Size");
+                println!("-------------------------------------------");
+                for (name, data) in ramdisk::list_files() {
+                    print!("{:<24} ", name);
+                    if human_readable {
+                        print_size(data.len());
+                        println!();
+                    } else {
+                        println!("{} bytes", data.len());
+                    }
+                }
+            } else {
+                // Print simple space-separated format (default)
+                for (name, _) in ramdisk::list_files() {
+                    print!("{}  ", name);
+                }
+                println!();
+            }
+        }
+        "cat" => {
+            let filename = args.trim();
+            if filename.is_empty() {
+                println_color!(Color::LightRed, "Usage: cat <filename>");
+                return;
+            }
+            if let Some(data) = ramdisk::read_file(filename) {
+                if let Ok(text) = core::str::from_utf8(data) {
+                    println!("{}", text);
+                } else {
+                    println_color!(Color::LightRed, "Error: File contains non-UTF8 binary data.");
+                }
+            } else {
+                println_color!(Color::LightRed, "File not found: '{}'", filename);
+            }
         }
         "clear" => {
             if let Some(writer) = WRITER.lock().as_mut() {
@@ -552,6 +658,26 @@ pub fn interpret_command(cmd_str: &str) {
         "panic" => {
             panic!("User triggered manual kernel panic!");
         }
+        "alloc" => {
+            use alloc::vec::Vec;
+            use alloc::boxed::Box;
+            use alloc::string::ToString;
+
+            println_color!(Color::LightCyan, "Testing Box allocation...");
+            let val = Box::new(42);
+            println!("Box value: {}", *val);
+
+            println_color!(Color::LightCyan, "Testing Vector allocation...");
+            let mut v = Vec::new();
+            for i in 0..5 {
+                v.push(i * 10);
+            }
+            println!("Vector contents: {:?}", v);
+
+            println_color!(Color::LightCyan, "Testing String allocation...");
+            let s = "Hello from the Heap!".to_string();
+            println!("String: {}", s);
+        }
         _ => {
             // Print error messages in red!
             println_color!(Color::LightRed, "Unknown command: '{}'. Type 'help' for options.", cmd);
@@ -569,6 +695,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // Initialize the global WRITER
         *WRITER.lock() = Some(FrameBufferWriter::new(buffer, info));
     }
+    // --- ADD HEAP INITIALIZATION HERE ---
+    println!("Initializing Heap memory allocator (100KB)...");
+    allocator::init_heap();
 
     interrupts::init_idt();
     // --- ADD THIS TIMER INITIALIZATION ---

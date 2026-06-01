@@ -218,3 +218,24 @@ A graphical window will launch displaying the `arch-rust >` interactive CLI comm
     Designed a speaker driver in speaker.rs that writes to PIT Channel 2 (Port `0x42`) to set audio frequencies
   and toggles Port `0x61` to turn speaker sound on and off. Added a `beep` command to the shell that plays tones for
   precise millisecond durations using the timer
+      ## 11. RAM Disk File System
+  - Designed a standard TAR archive reader in ramdisk.rs that parses a compile-time embedded tar file (`ramdisk.
+  tar`) without requiring heap allocation.
+  - Implemented `ls` and `cat` commands in the shell.
+  - Upgraded the `ls` command to parse UNIX-like options (e.g., `ls -l`, `ls -lh`, `ls -h`) to display detailed
+  files and human-readable byte sizes (formatting sizes without using floating-point operations).
+
+  ## 12. Heap Memory Management
+
+  - Configured a dynamic memory pool of 100 KB using a static regional array buffer.
+  - Integrated the `linked_list_allocator` crate and registered it as the global allocator (`#[global_allocator]`).
+  - Enabled the standard `alloc` library crate compilation in the workspace runner build flags, unlocking full
+  support for `Box`, `Vec`, `String`, and standard collections.
+
+  ## 13. Async Cooperative Multitasking Scheduler
+
+  - Implemented a custom asynchronous executor in task.rs using Rust's first-class `async/await` and `Future`
+  abstractions.
+  - Created a `SimpleExecutor` round-robin scheduler to queue and run multiple tasks cooperatively.
+  - Designed a `yield_now` future to allow active threads to save CPU cycles and yield control back to the task
+  scheduler.

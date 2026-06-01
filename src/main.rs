@@ -26,7 +26,7 @@ fn main() {
         "--target",
         "x86_64-unknown-none",
         "-Z",
-        "build-std=core,compiler_builtins",
+        "build-std=core,compiler_builtins,alloc",
     ]);
 
     let status = build_cmd.status().expect("failed to run cargo build for kernel");
