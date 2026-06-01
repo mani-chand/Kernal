@@ -1,7 +1,7 @@
 use x86_64::structures::idt::{ InterruptDescriptorTable, InterruptStackFrame };
 use x86_64::instructions::port::Port;
 use crate::println;
-use crate::print;
+use crate::print_color;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use pc_keyboard::{ layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1 };
@@ -77,9 +77,11 @@ extern "x86-interrupt" fn double_fault_handler(
 // --- Hardware Interrupt Handlers ---
 
 /// Timer handler: called on every clock tick (IRQ 0)
+/// Timer handler: called on every clock tick (IRQ 0)
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // For now, we don't print on every tick (it would spam the screen),
-    // but we MUST notify the PIC that the interrupt is handled.
+    // Increments the global millisecond tick counter
+    crate::time::increment_ticks();
+
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     }
@@ -115,14 +117,13 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
                     }
                 }
 
-                // If it's standard printable character, push to buffer and print it
+                // If it's a standard printable character, push to buffer and print in white
                 DecodedKey::Unicode(character) => {
-                    // Check if character is printable ASCII (codes 32 to 126)
                     let ascii_val = character as u8;
                     if (32..=126).contains(&ascii_val) {
                         let mut cmd_lock = crate::CMD_BUFFER.lock();
                         if cmd_lock.push(ascii_val) {
-                            print!("{}", character);
+                            print_color!(crate::Color::White, "{}", character); // Print user type in white
                         }
                     }
                 }

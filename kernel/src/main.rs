@@ -7,10 +7,56 @@ use core::fmt;
 use bootloader_api::{ entry_point, BootInfo };
 use spin::Mutex;
 mod interrupts;
+mod speaker;
+mod time;
 
 // Global screen writer protected by a spinlock Mutex.
 // Initially, it's empty (None) until we initialize it in kernel_main.
 pub static WRITER: Mutex<Option<FrameBufferWriter>> = Mutex::new(None);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Color {
+    Black = 0,
+    Blue,
+    Green,
+    Cyan,
+    Red,
+    Magenta,
+    Brown,
+    LightGray,
+    DarkGray,
+    LightBlue,
+    LightGreen,
+    LightCyan,
+    LightRed,
+    Pink,
+    Yellow,
+    White,
+}
+
+impl Color {
+    /// Returns the (Red, Green, Blue) byte values for each color
+    pub fn get_rgb(self) -> (u8, u8, u8) {
+        match self {
+            Color::Black => (0x00, 0x00, 0x00),
+            Color::Blue => (0x00, 0x00, 0xaa),
+            Color::Green => (0x00, 0xaa, 0x00),
+            Color::Cyan => (0x00, 0xaa, 0xaa),
+            Color::Red => (0xaa, 0x00, 0x00),
+            Color::Magenta => (0xaa, 0x00, 0xaa),
+            Color::Brown => (0xaa, 0x55, 0x00),
+            Color::LightGray => (0xaa, 0xaa, 0xaa),
+            Color::DarkGray => (0x55, 0x55, 0x55),
+            Color::LightBlue => (0x55, 0x55, 0xff),
+            Color::LightGreen => (0x00, 0xff, 0x00), // Pure bright green for hacker theme
+            Color::LightCyan => (0x55, 0xff, 0xff),
+            Color::LightRed => (0xff, 0x55, 0x55),
+            Color::Pink => (0xff, 0x55, 0xff),
+            Color::Yellow => (0xff, 0xff, 0x55),
+            Color::White => (0xff, 0xff, 0xff),
+        }
+    }
+}
 
 // 8x8 bitmap font data for drawing characters
 // A basic 8x8 font bitmap for standard printable ASCII characters 32 to 126
@@ -134,6 +180,7 @@ pub struct FrameBufferWriter {
     // Add these fields to track line history:
     line_end_positions: [usize; 256],
     current_line_index: usize,
+    current_color: Color,
 }
 
 impl FrameBufferWriter {
@@ -156,9 +203,15 @@ impl FrameBufferWriter {
             // Initialize history:
             line_end_positions: [0; 256],
             current_line_index: 0,
+            current_color: Color::LightGreen,
         };
         writer.clear();
         writer
+    }
+
+    // Add this helper method inside the impl FrameBufferWriter block
+    pub fn set_color(&mut self, color: Color) {
+        self.current_color = color;
     }
 
     // --- ADD THIS METHOD ---
@@ -316,6 +369,7 @@ impl FrameBufferWriter {
         }
 
         let bitmap = get_char_bitmap(c);
+        let (r, g, b) = self.current_color.get_rgb();
         for row in 0..8 {
             let byte = bitmap[row];
             for col in 0..8 {
@@ -328,9 +382,9 @@ impl FrameBufferWriter {
                             let pixel_offset = (py * stride + px) * bytes_per_pixel;
                             if pixel_offset + 2 < self.buffer.len() {
                                 // Draw character in bright green (RGB: 0, 255, 0)
-                                self.buffer[pixel_offset + self.r_idx] = 0x00;
-                                self.buffer[pixel_offset + self.g_idx] = 0xff;
-                                self.buffer[pixel_offset + self.b_idx] = 0x00;
+                                self.buffer[pixel_offset + self.r_idx] = r;
+                                self.buffer[pixel_offset + self.g_idx] = g;
+                                self.buffer[pixel_offset + self.b_idx] = b;
                             }
                         }
                     }
@@ -384,6 +438,34 @@ pub fn erase_char() {
     }
 }
 
+#[macro_export]
+macro_rules! print_color {
+    (
+        $color:expr,
+        $($arg:tt)*
+    ) => ($crate::_print_color($color, format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println_color {
+    ($color:expr) => ($crate::print_color!($color, "\n"));
+    (
+        $color:expr,
+        $($arg:tt)*
+    ) => ($crate::print_color!($color, "{}\n", format_args!($($arg)*)));
+}
+
+#[doc(hidden)]
+pub fn _print_color(color: Color, args: fmt::Arguments) {
+    use core::fmt::Write;
+    if let Some(writer) = WRITER.lock().as_mut() {
+        let prev_color = writer.current_color;
+        writer.set_color(color);
+        writer.write_fmt(args).unwrap();
+        writer.set_color(prev_color); // Restore previous color state
+    }
+}
+
 // A thread-safe global command buffer of size 80
 pub static CMD_BUFFER: Mutex<CommandBuf> = Mutex::new(CommandBuf {
     buf: [0; 80],
@@ -420,21 +502,23 @@ impl CommandBuf {
     }
 }
 
-/// The command execution engine
+pub fn print_prompt() {
+    print_color!(Color::LightCyan, "arch-rust > "); // Cyan prompt
+}
+
 pub fn interpret_command(cmd_str: &str) {
     let trimmed = cmd_str.trim();
     if trimmed.is_empty() {
         return;
     }
 
-    // Split the command from its arguments (e.g., "echo hello" -> command: "echo", args: "hello")
     let mut parts = trimmed.splitn(2, ' ');
     let cmd = parts.next().unwrap_or("");
     let args = parts.next().unwrap_or("");
 
     match cmd {
         "help" => {
-            println!("Available commands:");
+            println_color!(Color::Yellow, "Available commands:");
             println!("  help  - Show this help menu");
             println!("  clear - Clear the screen");
             println!("  about - About this OS");
@@ -447,24 +531,32 @@ pub fn interpret_command(cmd_str: &str) {
             }
         }
         "about" => {
-            println!("Arch-Rust OS v0.1.0");
+            println_color!(Color::LightGreen, "Arch-Rust OS v0.1.0");
             println!("A minimal 64-bit freestanding OS written in Rust.");
         }
+        "beep" => {
+            let freq_str = args.trim();
+            let freq = if freq_str.is_empty() {
+                440
+            } else {
+                freq_str.parse::<u32>().unwrap_or(440)
+            };
+
+            println_color!(Color::LightCyan, "Beeping at {} Hz...", freq);
+            speaker::beep(freq, 200); // <-- Change this to pass 200ms
+        }
+        // ------------------------------
         "echo" => {
-            println!("{}", args);
+            println_color!(Color::White, "{}", args);
         }
         "panic" => {
             panic!("User triggered manual kernel panic!");
         }
         _ => {
-            println!("Unknown command: '{}'. Type 'help' for options.", cmd);
+            // Print error messages in red!
+            println_color!(Color::LightRed, "Unknown command: '{}'. Type 'help' for options.", cmd);
         }
     }
-}
-
-// Helper to print the command prompt line
-pub fn print_prompt() {
-    print!("arch-rust > ");
 }
 
 entry_point!(kernel_main);
@@ -478,16 +570,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         *WRITER.lock() = Some(FrameBufferWriter::new(buffer, info));
     }
 
-    // --- ADD INTERRUPT INITIALIZATION HERE ---
-    println!("Loading Interrupt Descriptor Table (IDT)...");
     interrupts::init_idt();
-
-    println!("Initializing 8259 PIC controllers...");
+    // --- ADD THIS TIMER INITIALIZATION ---
+    println!("Initializing PIT system timer (1ms ticks)...");
+    time::init_pit();
     unsafe {
         interrupts::PICS.lock().initialize();
     }
 
-    println!("Enabling hardware interrupts in CPU...");
     x86_64::instructions::interrupts::enable(); // Tells the CPU to start listening to hardware interrupts
     println!("Interrupts enabled! Try typing on your keyboard...");
 

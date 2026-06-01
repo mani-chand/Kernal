@@ -133,6 +133,10 @@ fn main() {
     }
 
     cmd.arg("-drive").arg(format!("format=raw,file={}", absolute_bios_path));
+    // Add these two lines here in the RUNNER:
+    // Change "wasapi" to "dsound" here:
+    cmd.arg("-audiodev").arg("dsound,id=snd0");
+    cmd.arg("-machine").arg("pcspk-audiodev=snd0");
     println!("Running QEMU command: {:?}", cmd);
     let mut child = cmd.spawn().expect("failed to start QEMU");
     let exit_status = child.wait().unwrap();
